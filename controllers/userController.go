@@ -158,48 +158,64 @@ func GetUsers() gin.HandlerFunc {
 		err := helpers.CheckUserType(c, "ADMIN")
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
 		}
 
 		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
-		recordPerPage, err := strconv.Atoi(c.Query("recordPerPage"))
-		if err != nil {
+		defer cancel()
+
+		recordPerPageStr := c.Query("recordPerPage")
+		recordPerPage, err := strconv.Atoi(recordPerPageStr)
+		if err != nil || recordPerPage < 1 {
 			recordPerPage = 10
 		}
-		if recordPerPage < 1 {
-			recordPerPage = 10
-		}
-		page, pageErr := strconv.Atoi(c.Query("page"))
-		if pageErr != nil || page < 1 {
+
+		pageStr := c.Query("page")
+		page, err := strconv.Atoi(pageStr)
+		if err != nil || page < 1 {
 			page = 1
 		}
 
 		startIndex := (page - 1) * recordPerPage
-		fmt.Print(startIndex)
 
-		startIndex, err = strconv.Atoi(c.Query("startIndex"))
-		fmt.Print(startIndex)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "error occured while listing user items"})
+		startIndexStr := c.Query("startIndex")
+		if startIndexStr != "" {
+			startIndex, err = strconv.Atoi(startIndexStr)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid startIndex parameter"})
+				return
+			}
 		}
 
 		matchStage := bson.D{{Key: "$match", Value: bson.D{{}}}}
-		groupStage := bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: bson.D{{Key: "_id", Value: "null"}}}, {Key: "total_count", Value: bson.D{{"$sum", 1}}}, {Key: "data", Value: bson.D{{Key: "$push", Value: "$$ROOT"}}}}}}
-		projectStage := bson.D{
-			{Key: "$project", Value: bson.D{
-				{Key: "_id", Value: 0},
-				{Key: "total_count", Value: 1},
-				{Key: "user_items", Value: bson.D{{Key: "$slice", Value: []interface{}{"$data", startIndex, recordPerPage}}}}}}}
+		groupStage := bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: "null"},
+			{Key: "total_count", Value: bson.D{{Key: "$sum", Value: 1}}},
+			{Key: "data", Value: bson.D{{Key: "$push", Value: "$$ROOT"}}},
+		}}}
+		projectStage := bson.D{{Key: "$project", Value: bson.D{
+			{Key: "_id", Value: 0},
+			{Key: "total_count", Value: 1},
+			{Key: "user_items", Value: bson.D{{Key: "$slice", Value: []interface{}{"$data", startIndex, recordPerPage}}}},
+		}}}
+
 		result, err := userCollection.Aggregate(ctx, mongo.Pipeline{
 			matchStage, groupStage, projectStage})
-		defer cancel()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "error occured while listing user items"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "error occurred while listing user items"})
+			return
 		}
+
 		var allusers []bson.M
 		if err = result.All(ctx, &allusers); err != nil {
 			log.Fatal(err)
 		}
-		c.JSON(http.StatusOK, allusers[0])
+
+		if len(allusers) > 0 {
+			c.JSON(http.StatusOK, allusers[0])
+		} else {
+			c.JSON(http.StatusOK, gin.H{"total_count": 0, "user_items": []bson.M{}})
+		}
 	}
 }
 
